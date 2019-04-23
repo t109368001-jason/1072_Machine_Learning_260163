@@ -17,7 +17,24 @@ import time as time
 import sys
 import math
 from keras import backend as K
+from scipy.signal import butter, lfilter, freqz
 
+
+output = False
+use_gpu = False
+train_valid = True
+
+verbose = 2
+batch_size = 32
+epochs = 1000000
+prediction_target_name = 'price'
+hidden_unit = 64
+metrics = []
+loss = 'mean_absolute_error'
+
+gpu_options = tf.GPUOptions(allow_growth=True)
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 if use_gpu else 0, 'CPU':4}))
+keras.backend.set_session(sess)
 
 trainFile = pd.read_csv('./train-v3.csv', index_col=0)
 validFile = pd.read_csv('./valid-v3.csv', index_col=0)
@@ -27,74 +44,99 @@ trainFile.index = np.linspace(0, trainFile.shape[0]-1, trainFile.shape[0], dtype
 validFile.index = np.linspace(0, validFile.shape[0]-1, validFile.shape[0], dtype=int)
 testFile.index = np.linspace(0, testFile.shape[0]-1, testFile.shape[0], dtype=int)
 
-"""
 for i in range(trainFile.shape[0]):
-    if trainFile.at[i, 'price'] > 4000000:
+    if (trainFile.at[i, 'price'] > 3000000):
         trainFile = trainFile.drop(i, axis=0)
         i -= 1;
-"""
-"""
-#remove_columns = ['sale_yr', 'sale_month', 'sale_day', 'zipcode', 'lat', 'long', 'yr_built', 'yr_renovated', 'floors', 'condition', 'waterfront', 'view', 'sqft_basement', 'sqft_lot15', 'bedrooms', 'bathrooms', 'sqft_lot']
-remove_columns = ['sale_yr', 'sale_month', 'sale_day']
+
+if train_valid:
+    for i in range(validFile.shape[0]):
+        if (validFile.at[i, 'price'] > 3000000):
+            validFile = validFile.drop(i, axis=0)
+            i -= 1;
+            
+#adam
+remove_columns = []
+#remove_columns.append('grade')         #1523
+#remove_columns.append('lat')           #1124
+#remove_columns.append('long')          #931
+#remove_columns.append('sqft_living')   #743
+#remove_columns.append('sqft_lot')      #712
+#remove_columns.append('waterfront')    #673
+#remove_columns.append('view')          #661
+#remove_columns.append('yr_built')      #645
+#remove_columns.append('sqft_above')    #641
+#remove_columns.append('sqft_lot15')    #641
+remove_columns.append('sqft_living15') # 
+remove_columns.append('floors')        #
+remove_columns.append('sale_day')      #
+remove_columns.append('condition')     #
+remove_columns.append('zipcode')       #
+remove_columns.append('bathrooms')     #
+remove_columns.append('sqft_basement') #
+remove_columns.append('bedrooms')      #
+remove_columns.append('yr_renovated')  #
+remove_columns.append('sale_month')    #
+remove_columns.append('sale_yr')       #
+
 trainFile = trainFile.drop(columns=remove_columns)
 validFile = validFile.drop(columns=remove_columns)
 testFile = testFile.drop(columns=remove_columns)
-"""
-"""
-duplicate_columns = ['sqft_living', 'sqft_above', 'grade', 'sqft_living15', 'bathrooms']
-for i in range(len(duplicate_columns)):
-    trainFile['c'+str(i)] = trainFile[duplicate_columns[i]]
-    validFile['c'+str(i)] = validFile[duplicate_columns[i]]
-    testFile['c'+str(i)] = testFile[duplicate_columns[i]]
-"""
-"""
-trainFile['c'] = trainFile['sqft_living']+trainFile['sqft_above']
-validFile['c'] = validFile['sqft_living']+validFile['sqft_above']
-testFile['c'] = testFile['sqft_living']+testFile['sqft_above']
-"""
-output = False
-force_gpu = False
-train_valid = False
-use_scaler = True
-Y_scaler = False
 
-#batch_size = int((train_valid and trainFile.shape[0]+validFile.shape[0] or trainFile.shape[0])/1+1)
-batch_size = 2048
-#batch_size = 1
-epochs = 1000000
-verbose = 2
-prediction_target_name = 'price'
-hidden_unit = int((trainFile.shape[1]-1)*2/3)+1
-#hidden_unit = int((trainFile.shape[1])*1/2)
-#hidden_unit = 32
-metrics = ['mean_absolute_error']
-loss = 'mean_squared_error'
-#loss = lambda y_true, y_pred : keras.backend.mean(keras.backend.square(y_true - y_pred))
+trainFile = trainFile.dropna()
+validFile = validFile.dropna()
+testFile = testFile.dropna()
 
-gpu_options = tf.GPUOptions(allow_growth=True)
-sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 if force_gpu else (hidden_unit*batch_size > 1e5 and 1 or 0), 'CPU':4}))
-keras.backend.set_session(sess)
+X_train = trainFile.drop(columns=prediction_target_name)
+Y_train = trainFile[prediction_target_name]
 
-optimizer = optimizers.adadelta(lr=1.0, rho=0.95, epsilon=1e-10, decay=0)
-#optimizer = optimizers.adagrad(lr=0.01, epsilon=None, decay=0)
-#optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0, amsgrad=False)
-#optimizer = AdamWOptimizer(weight_decay=1e-4, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-10, use_locking=False)
-#optimizer = optimizers.adamax(lr=0.002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0)
-#optimizer = optimizers.nadam(lr=0.002, beta_1=0.9, beta_2=0.999, epsilon=None, schedule_decay=0.004)
-#optimizer = optimizers.rmsprop(lr=0.001, rho=0.9, epsilon=None, decay=0)
-#optimizer = optimizers.sgd(lr=0.01, momentum=0.0, decay=0, nesterov=False)
-#optimizer = optimizers.sgd(lr=0.01, momentum=0.9, decay=1e-6, nesterov=True)
+X_valid = validFile.drop(columns=prediction_target_name)
+Y_valid = validFile[prediction_target_name]
+
+X_test = testFile
+
+X_train_stats = X_train.describe()
+X_train_stats = X_train_stats.transpose()
+
+Y_train_mean = Y_train.mean()
+Y_train_std = Y_train.std()
+
+def normX(x):
+  return (x - X_train_stats['mean']) / X_train_stats['std']
+
+X_train = normX(X_train)
+X_valid = normX(X_valid)
+X_test = normX(X_test)
+
+Y_train = (Y_train - Y_train_mean) / Y_train_std
+Y_valid = (Y_valid - Y_train_mean) / Y_train_std
+
+if train_valid:
+    X_train = X_train.append(X_valid)
+    X_valid = X_valid.drop(index=X_valid.index)
+    Y_train = Y_train.append(Y_valid)
+    Y_valid = Y_valid.drop(index=Y_valid.index)
+    
+X_train = X_train.values
+X_valid = X_valid.values
+X_test = X_test.values
+Y_train = Y_train.values
+Y_valid = Y_valid.values
+
+#optimizer = optimizers.adadelta(lr=1.0, rho=0.95, epsilon=1e-24, decay=0.0)
+optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-24, decay=0, amsgrad=False)
+#optimizer = optimizers.sgd(lr=0.01, momentum=0, decay=0, nesterov=False)
 
 #kernel_initializer = initializers.normal(mean=0, stddev=0.5, seed=None)
-#kernel_initializer = initializers.uniform(minval=-0.05, maxval=0.05, seed=None)
+kernel_initializer = initializers.uniform(minval=-0.05, maxval=0.05, seed=None)
 #kernel_initializer = initializers.truncated_normal(mean=0.0, stddev=0.05, seed=None)
 #kernel_initializer = initializers.orthogonal(gain=1, seed=None)
 #kernel_initializer = initializers.identity(gain=1)
 #kernel_initializer = initializers.he_uniform()
-kernel_initializer = initializers.glorot_uniform()
+#kernel_initializer = initializers.glorot_uniform()
 
 #bias_initializer = initializers.normal(mean=0, stddev=0.5, seed=None)
-#bias_initializer = initializers.uniform(minval=-0.5, maxval=0.5, seed=None)
+#bias_initializer = initializers.uniform(minval=-0.05, maxval=0.05, seed=None)
 #bias_initializer = initializers.truncated_normal(mean=0.0, stddev=0.05, seed=None)
 #bias_initializer = initializers.orthogonal(gain=1, seed=None)
 #bias_initializer = initializers.identity(gain=1)
@@ -102,19 +144,16 @@ kernel_initializer = initializers.glorot_uniform()
 #bias_initializer = initializers.glorot_uniform()
 bias_initializer = initializers.zeros()
 
-kernel_regularizer = regularizers.l2(l=0.01)
-#kernel_regularizer = None
+#kernel_regularizer = regularizers.l2(l=0.01)
+kernel_regularizer = None
 
 #bias_regularizer = regularizers.l2(l=0.01)
 bias_regularizer = None
 
 #activation = 'elu'
 #activation = 'hard_sigmoid'
-activation = 'linear'
-#activation = lambda x : K.abs(x)*x
-#activation = lambda x : x*x
-#activation = lambda x : activations.relu(x, threshold=10000.0, alpha=0)
-#activation = 'relu'
+#activation = 'linear'
+activation = 'relu'
 #activation = 'selu'
 #activation = 'sigmoid'
 #activation = 'softmax'
@@ -124,11 +163,10 @@ activation = 'linear'
 #activation = None
 
 class EarlyStoppingThreshold(keras.callbacks.Callback):
-    def __init__(self, monitor='val_loss', value=0, verbose=0):
+    def __init__(self, monitor='val_loss', value=0):
         super(EarlyStoppingThreshold, self).__init__()
         self.monitor=monitor
         self.value=value
-        self.verbose=verbose
     def on_epoch_end(self, epoch, logs={}):
         current = logs.get(self.monitor)
         if current is None:
@@ -138,16 +176,56 @@ class EarlyStoppingThreshold(keras.callbacks.Callback):
             self.model.stop_training = True
 
 
+class RestoreBestWeightsFinal(keras.callbacks.Callback):
+    def __init__(self,
+                 min_delta=0,
+                 mode='auto',
+                 baseline=None):
+        super(RestoreBestWeightsFinal, self).__init__()
+        self.min_delta = min_delta
+        self.best_weights = None
+
+        if mode not in ['auto', 'min', 'max']:
+            mode = 'auto'
+
+        if mode == 'min':
+            self.monitor_op = np.less
+        elif mode == 'max':
+            self.monitor_op = np.greater
+        else:
+            self.monitor_op = np.less
+
+        if self.monitor_op == np.greater:
+            self.min_delta *= 1
+        else:
+            self.min_delta *= -1
+
+    def on_train_begin(self, logs=None):
+        # Allow instances to be re-used
+        self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        
+    def on_train_end(self, logs=None):
+        if self.best_weights is not None:
+            self.model.set_weights(self.best_weights)
+
+    def on_epoch_end(self, epoch, logs=None):
+        val_current = logs.get('val_loss')
+        current = logs.get('loss')
+        if current is None:
+            return
+
+        if self.monitor_op(val_current - self.min_delta, self.best) and (val_current < (current*0.99)):
+            self.best = val_current
+            self.best_weights = self.model.get_weights()
+                
 class RestoreBestWeights(keras.callbacks.Callback):
     def __init__(self,
                  monitor='val_loss',
                  min_delta=0,
                  patience=0,
-                 verbose=0,
                  mode='auto',
                  baseline=None):
         super(RestoreBestWeights, self).__init__()
-
         self.monitor = monitor
         self.patience = patience
         self.min_delta = min_delta
@@ -176,14 +254,18 @@ class RestoreBestWeights(keras.callbacks.Callback):
         # Allow instances to be re-used
         self.wait = 0
         self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        
+    def on_train_end(self, logs=None):
+        self.model.set_weights(self.best_weights)
 
     def on_epoch_end(self, epoch, logs=None):
-        current = logs.get(self.monitor)
+        val_current = logs.get('val_loss')
+        current = logs.get('loss')
         if current is None:
             return
 
-        if self.monitor_op(current - self.min_delta, self.best):
-            self.best = current
+        if self.monitor_op(val_current - self.min_delta, self.best) and (val_current < (current*0.99)):
+            self.best = val_current
             self.wait = 0
             self.best_weights = self.model.get_weights()
         else:
@@ -192,47 +274,12 @@ class RestoreBestWeights(keras.callbacks.Callback):
                 self.model.set_weights(self.best_weights)
 
 callbacks = []
-callbacks.append(keras.callbacks.EarlyStopping(monitor='val_loss', patience=200))
-#callbacks.append(RestoreBestWeights(monitor='val_loss', patience=10))
-#callbacks.append(EarlyStoppingThreshold(monitor='mean_absolute_error', value=20000))
+#callbacks.append(keras.callbacks.EarlyStopping(monitor='loss', patience=50))
+callbacks.append(keras.callbacks.EarlyStopping(monitor='val_loss', patience=100))
+#callbacks.append(RestoreBestWeights(patience=1))
+#callbacks.append(EarlyStoppingThreshold(monitor='loss', value=0.1892))
+callbacks.append(RestoreBestWeightsFinal())
 #callbacks = None
-
-trainFile = trainFile.dropna()
-validFile = validFile.dropna()
-testFile = testFile.dropna()
-
-X_train = trainFile.drop(columns=prediction_target_name)
-Y_train = trainFile[prediction_target_name]
-
-X_valid = validFile.drop(columns=prediction_target_name)
-Y_valid = validFile[prediction_target_name]
-
-X_test = testFile
-
-X_train_stats = X_train.describe()
-X_train_stats = X_train_stats.transpose()
-
-Y_train_mean = Y_train.mean()
-Y_train_std = Y_train.std()
-
-
-def normX(x):
-  return ((x - X_train_stats['mean']) / X_train_stats['std']).values
-
-if use_scaler:
-    X_train = normX(X_train)
-    X_valid = normX(X_valid)
-    X_test = normX(X_test)
-
-if Y_scaler:
-    Y_train = (Y_train - Y_train_mean) / Y_train_std
-    Y_valid = (Y_valid - Y_train_mean) / Y_train_std
-
-if train_valid:
-    X_train = np.append(X_train, X_valid, axis=0)
-    X_valid = None
-    Y_train = np.append(Y_train, Y_valid, axis=0)
-    Y_valid = None
 
 model = Sequential()
 model.add(Dense(int(hidden_unit), activation=activation, kernel_initializer=kernel_initializer, bias_initializer=bias_initializer, kernel_regularizer=kernel_regularizer, bias_regularizer=bias_regularizer, input_dim=X_train.shape[1]))
@@ -240,15 +287,11 @@ model.add(Dense(int(hidden_unit), activation=activation, kernel_initializer=kern
 
 model.add(Dense(int(hidden_unit/2), activation=activation, kernel_initializer=kernel_initializer, bias_initializer=bias_initializer, kernel_regularizer=kernel_regularizer, bias_regularizer=bias_regularizer))
 #model.add(Dropout(0.25))
-i=hidden_unit/4
-while i > 4 :    
-    model.add(Dense(int(i), activation=activation, kernel_initializer=kernel_initializer, bias_initializer=bias_initializer, kernel_regularizer=kernel_regularizer, bias_regularizer=bias_regularizer))
-    #model.add(Dropout(0.25))
-    i =i / 2
 
-model.add(Dense( 1, activation=activation))
+model.add(Dense( 1, activation=None))
 model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 model.summary()
+
 t = time.time()
 
 history_o = model.fit(X_train, Y_train, validation_data= None if train_valid else (X_valid, Y_valid), batch_size=batch_size, epochs=epochs, shuffle=True, verbose=verbose, callbacks=None if callbacks == None else callbacks)
@@ -259,8 +302,8 @@ history = pd.DataFrame(history_o.history)
 
 Y_test = model.predict(X_test)
 
-if Y_scaler:
-    history = history * Y_train_std + Y_train_mean
+Y_test = (Y_test * Y_train_std) + Y_train_mean
+history = history * Y_train_std
     
 history['epoch'] = history_o.epoch
     
@@ -278,7 +321,7 @@ filename += '_'+str(batch_size)
 filename += '_'+str(history['epoch'].values[-1])
 filename += '_'+str(hidden_unit)
 filename += '_train_valid_'+str(train_valid)
-filename += '_' + ''
+filename += '_' + 'normalY'
 
 for i in range(len(metrics)):
     plt.plot(history[metrics[i]])
@@ -296,7 +339,7 @@ for i in range(len(metrics)):
     plt.show()
 
 f = plt.figure(figsize=(10,10));
-# Plot training & validation loss values
+
 plt.plot(history['loss'])
 if train_valid:
     plt.title('Model loss='+str(final_loss))
@@ -318,11 +361,9 @@ if output:
     Y_test_csv_format = pd.DataFrame(Y_test, index=np.linspace(1, Y_test.shape[0], Y_test.shape[0], dtype=int), columns=[prediction_target_name])
     Y_test_csv_format.to_csv(filename+'.csv', index_label='id')
     f.savefig(filename+'.pdf', bbox_inches='tight')
-    # serialize model to JSON
     model_json = model.to_json()
     with open(filename+'.json', 'w') as json_file:
         json_file.write(model_json)
-    # serialize weights to HDF5
     model.save_weights(filename+'.h5')
     
 print(' elapsed : ' + str(elapsed))
@@ -338,9 +379,4 @@ else:
 print('test price max : '+str(Y_test.max()))
 print('   hidden_unit : '+str(hidden_unit))
 print('    batch_size : '+str(batch_size))
-print('    mae / mean : '+str(history['mean_absolute_error'].values[-1]/Y_train.mean()*100))
-if not train_valid:
-    print('val_mae / mean : '+str(history['val_mean_absolute_error'].values[-1]/Y_valid.mean()*100))
-#print(' test sqft_living max : '+str(pd.DataFrame(scaler.inverse_transform(testFile.values), columns=testFile.columns)['sqft_living'].max()))
-#print('train sqft_living max : '+str(pd.DataFrame(scaler.inverse_transform(trainFile.values), columns=trainFile.columns)['sqft_living'].max()))
 

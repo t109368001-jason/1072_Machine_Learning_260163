@@ -22,10 +22,10 @@ from scipy.signal import butter, lfilter, freqz
 
 output = False
 use_gpu = False
-train_valid = False
+train_valid = True
 
 verbose = 2
-batch_size = 16
+batch_size = 32
 epochs = 1000000
 prediction_target_name = 'price'
 hidden_unit = 64
@@ -40,38 +40,44 @@ trainFile = pd.read_csv('./train-v3.csv', index_col=0)
 validFile = pd.read_csv('./valid-v3.csv', index_col=0)
 testFile = pd.read_csv('./test-v3.csv', index_col=0)
 
-
 trainFile.index = np.linspace(0, trainFile.shape[0]-1, trainFile.shape[0], dtype=int)
 validFile.index = np.linspace(0, validFile.shape[0]-1, validFile.shape[0], dtype=int)
 testFile.index = np.linspace(0, testFile.shape[0]-1, testFile.shape[0], dtype=int)
+
 for i in range(trainFile.shape[0]):
-    if trainFile.at[i, 'price'] > 4000000:
+    if (trainFile.at[i, 'price'] > 3000000):
         trainFile = trainFile.drop(i, axis=0)
         i -= 1;
 
-for i in range(validFile.shape[0]):
-    if validFile.at[i, 'price'] > 4000000:
-        validFile = validFile.drop(i, axis=0)
-        i -= 1;
-
-
-remove_columns = []                     #641 638 646 644 636 641 625 636 
-#remove_columns.append('sale_yr')       #649 645 644 645 644 629 647 649
-#remove_columns.append('sale_month')    #645 631 639 638 637 636 640 639
-#remove_columns.append('sale_day')      #637 630 648 640 637 642 636 637
-#remove_columns.append('zipcode')       #648 650 639 634 650 650 
-remove_columns.append('lat')           #
-#remove_columns.append('long')          #
-#remove_columns.append('yr_built')      #
-#remove_columns.append('yr_renovated')  #
-#remove_columns.append('floors')        #
-#remove_columns.append('condition')     #
-#remove_columns.append('waterfront')    #
-#remove_columns.append('view')          #
-#remove_columns.append('sqft_basement') #
-#remove_columns.append('sqft_lot15')    #
-#remove_columns.append('bedrooms')      #
-#remove_columns.append('sqft_lot')      #
+if train_valid:
+    for i in range(validFile.shape[0]):
+        if (validFile.at[i, 'price'] > 3000000):
+            validFile = validFile.drop(i, axis=0)
+            i -= 1;
+            
+#adam
+remove_columns = []
+#remove_columns.append('grade')         #1523
+#remove_columns.append('lat')           #1124
+#remove_columns.append('long')          #931
+#remove_columns.append('sqft_living')   #743
+#remove_columns.append('sqft_lot')      #712
+#remove_columns.append('waterfront')    #673
+#remove_columns.append('view')          #661
+#remove_columns.append('yr_built')      #645
+#remove_columns.append('sqft_above')    #641
+#remove_columns.append('sqft_lot15')    #641
+remove_columns.append('sqft_living15') # 
+remove_columns.append('floors')        #
+remove_columns.append('sale_day')      #
+remove_columns.append('condition')     #
+remove_columns.append('zipcode')       #
+remove_columns.append('bathrooms')     #
+remove_columns.append('sqft_basement') #
+remove_columns.append('bedrooms')      #
+remove_columns.append('yr_renovated')  #
+remove_columns.append('sale_month')    #
+remove_columns.append('sale_yr')       #
 
 trainFile = trainFile.drop(columns=remove_columns)
 validFile = validFile.drop(columns=remove_columns)
@@ -118,14 +124,8 @@ Y_train = Y_train.values
 Y_valid = Y_valid.values
 
 #optimizer = optimizers.adadelta(lr=1.0, rho=0.95, epsilon=1e-24, decay=0.0)
-#optimizer = optimizers.adagrad(lr=0.01, epsilon=None, decay=0)
-#optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-24, decay=0, amsgrad=False)
-#optimizer = AdamWOptimizer(weight_decay=1e-6, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-24, use_locking=False)
-#optimizer = optimizers.adamax(lr=0.002, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0)
-#optimizer = optimizers.nadam(lr=0.002, beta_1=0.9, beta_2=0.999, epsilon=None, schedule_decay=0.004)
-#optimizer = optimizers.rmsprop(lr=0.001, rho=0.9, epsilon=1e-24, decay=0)
-optimizer = optimizers.sgd(lr=0.01, momentum=0, decay=0, nesterov=False)
-#optimizer = optimizers.sgd(lr=0.01, momentum=0.9, decay=1e-6, nesterov=False)
+optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-24, decay=0, amsgrad=False)
+#optimizer = optimizers.sgd(lr=0.01, momentum=0, decay=0, nesterov=False)
 
 #kernel_initializer = initializers.normal(mean=0, stddev=0.5, seed=None)
 kernel_initializer = initializers.uniform(minval=-0.05, maxval=0.05, seed=None)
@@ -176,6 +176,48 @@ class EarlyStoppingThreshold(keras.callbacks.Callback):
             self.model.stop_training = True
 
 
+class RestoreBestWeightsFinal(keras.callbacks.Callback):
+    def __init__(self,
+                 min_delta=0,
+                 mode='auto',
+                 baseline=None):
+        super(RestoreBestWeightsFinal, self).__init__()
+        self.min_delta = min_delta
+        self.best_weights = None
+
+        if mode not in ['auto', 'min', 'max']:
+            mode = 'auto'
+
+        if mode == 'min':
+            self.monitor_op = np.less
+        elif mode == 'max':
+            self.monitor_op = np.greater
+        else:
+            self.monitor_op = np.less
+
+        if self.monitor_op == np.greater:
+            self.min_delta *= 1
+        else:
+            self.min_delta *= -1
+
+    def on_train_begin(self, logs=None):
+        # Allow instances to be re-used
+        self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        
+    def on_train_end(self, logs=None):
+        if self.best_weights is not None:
+            self.model.set_weights(self.best_weights)
+
+    def on_epoch_end(self, epoch, logs=None):
+        val_current = logs.get('val_loss')
+        current = logs.get('loss')
+        if current is None:
+            return
+
+        if self.monitor_op(val_current - self.min_delta, self.best) and (val_current < (current*0.99)):
+            self.best = val_current
+            self.best_weights = self.model.get_weights()
+                
 class RestoreBestWeights(keras.callbacks.Callback):
     def __init__(self,
                  monitor='val_loss',
@@ -212,6 +254,9 @@ class RestoreBestWeights(keras.callbacks.Callback):
         # Allow instances to be re-used
         self.wait = 0
         self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        
+    def on_train_end(self, logs=None):
+        self.model.set_weights(self.best_weights)
 
     def on_epoch_end(self, epoch, logs=None):
         val_current = logs.get('val_loss')
@@ -229,10 +274,11 @@ class RestoreBestWeights(keras.callbacks.Callback):
                 self.model.set_weights(self.best_weights)
 
 callbacks = []
-#callbacks.append(keras.callbacks.EarlyStopping(monitor='loss', patience=100))
-callbacks.append(keras.callbacks.EarlyStopping(monitor='val_loss', patience=200))
+#callbacks.append(keras.callbacks.EarlyStopping(monitor='loss', patience=50))
+callbacks.append(keras.callbacks.EarlyStopping(monitor='val_loss', patience=100))
 #callbacks.append(RestoreBestWeights(patience=1))
-#callbacks.append(EarlyStoppingThreshold(monitor='loss', value=0.1400))
+#callbacks.append(EarlyStoppingThreshold(monitor='loss', value=0.1892))
+callbacks.append(RestoreBestWeightsFinal())
 #callbacks = None
 
 model = Sequential()
@@ -241,14 +287,6 @@ model.add(Dense(int(hidden_unit), activation=activation, kernel_initializer=kern
 
 model.add(Dense(int(hidden_unit/2), activation=activation, kernel_initializer=kernel_initializer, bias_initializer=bias_initializer, kernel_regularizer=kernel_regularizer, bias_regularizer=bias_regularizer))
 #model.add(Dropout(0.25))
-
-"""
-i=hidden_unit/4
-while i > 1 :    
-    model.add(Dense(int(i), activation=activation, kernel_initializer=kernel_initializer, bias_initializer=bias_initializer, kernel_regularizer=kernel_regularizer, bias_regularizer=bias_regularizer))
-    #model.add(Dropout(0.25))
-    i =i / 2
-"""
 
 model.add(Dense( 1, activation=None))
 model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
@@ -301,7 +339,7 @@ for i in range(len(metrics)):
     plt.show()
 
 f = plt.figure(figsize=(10,10));
-# Plot training & validation loss values
+
 plt.plot(history['loss'])
 if train_valid:
     plt.title('Model loss='+str(final_loss))
@@ -323,11 +361,9 @@ if output:
     Y_test_csv_format = pd.DataFrame(Y_test, index=np.linspace(1, Y_test.shape[0], Y_test.shape[0], dtype=int), columns=[prediction_target_name])
     Y_test_csv_format.to_csv(filename+'.csv', index_label='id')
     f.savefig(filename+'.pdf', bbox_inches='tight')
-    # serialize model to JSON
     model_json = model.to_json()
     with open(filename+'.json', 'w') as json_file:
         json_file.write(model_json)
-    # serialize weights to HDF5
     model.save_weights(filename+'.h5')
     
 print(' elapsed : ' + str(elapsed))
@@ -343,6 +379,4 @@ else:
 print('test price max : '+str(Y_test.max()))
 print('   hidden_unit : '+str(hidden_unit))
 print('    batch_size : '+str(batch_size))
-#print(' test sqft_living max : '+str(pd.DataFrame(scaler.inverse_transform(testFile.values), columns=testFile.columns)['sqft_living'].max()))
-#print('train sqft_living max : '+str(pd.DataFrame(scaler.inverse_transform(trainFile.values), columns=trainFile.columns)['sqft_living'].max()))
 
