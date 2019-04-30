@@ -15,7 +15,6 @@ from keras import optimizers
 from keras.preprocessing import image
 from keras.preprocessing.image import ImageDataGenerator
 from keras.preprocessing.image import img_to_array, load_img
-from tensorflow.contrib.opt import AdamWOptimizer
 import datetime
 import time as time
 import sys
@@ -24,9 +23,11 @@ import math
 from keras import backend as K
 from scipy.signal import butter, lfilter, freqz
 from scipy import misc
-import cv2
 import gc
 import random
+import re
+K.clear_session()
+
 
 
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
@@ -36,9 +37,10 @@ use_gpu = True
 split_train = True
 
 verbose = 1
-batch_size = 32
-epochs = 1000
-image_width = 128
+batch_size = 4
+epochs = 50
+image_width = 512
+validation_split = 0.1
 prediction_target_name = 'character'
 metrics = ['acc']
 loss = 'categorical_crossentropy'
@@ -50,69 +52,64 @@ tmp_dir = '../input/tmp/'
 gpu_options = tf.GPUOptions(allow_growth=True)
 sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 if use_gpu else 0, 'CPU':4}))
 keras.backend.set_session(sess)
-
+'''
 characters_20 = ['{}'.format(i) for i in os.listdir(train_dir)]
-train_path = np.array([]).reshape(0,2)
 
-for index,character in enumerate(characters_20):
-    paths = np.array(['../input/train/{}/{}'.format(character,i) for i in os.listdir(train_dir+character)]).T.reshape(-1,1)
-    
-    train_character = np.append(paths,(index)*np.ones(shape=paths.shape),axis=1)
-    train_path = np.append(train_path,train_character, axis=0)
-random.shuffle(train_path)
-
-if split_train:
-    train_path, valid_path = train_test_split(train_path, test_size=0.1, random_state=2)
-    X_valid_path = valid_path[:,0]
-    Y_valid = valid_path[:,1]
-
-X_train_path = train_path[:,0]
-Y_train = train_path[:,1]
 t = time.time()
-print('loading images')
 try:
     X_train = np.load(tmp_dir+str(image_width)+'_X_train.npy')
+    Y_train = np.load(tmp_dir+str(image_width)+'_Y_train.npy')
 except FileNotFoundError:
-    X_train = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
-            for i in X_train_path]
-    np.save(tmp_dir+str(image_width)+'_X_train.npy',X_train)
-print('X_train created')
-try:
-    X_valid = np.load(tmp_dir+str(image_width)+'_X_valid.npy')
-except FileNotFoundError:
-    X_valid = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
-            for i in X_valid_path]
-    np.save(tmp_dir+str(image_width)+'_X_valid.npy',X_valid)
-print('X_valid created')
+    train_path = pd.DataFrame(np.array([]).reshape(0,2), columns=['image','character'], dtype='str')
+    for index,character in enumerate(characters_20):
+        paths = np.array(['../input/train/{}/{}'.format(character,i) for i in os.listdir(train_dir+character)]).T.reshape(-1,1)
+        
+        train_character = np.append(paths,(index)*np.ones(shape=paths.shape, dtype='uint8'),axis=1)
+        train_path = pd.DataFrame(np.append(train_path,train_character, axis=0), columns=['image','character'])
+    train_path = train_path.sample(frac=1).reset_index(drop=True)
 
-X_test_path = ['../input/test/{}'.format(i) for i in os.listdir(test_dir)]
-X_test_path.sort()
-X_test = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
-            for i in X_test_path]
+    print('loading images')
+    X_train = np.array(train_path.drop(columns=[prediction_target_name]).values, dtype='str').reshape(-1)
+    Y_train = np.array(train_path[prediction_target_name].values, dtype='uint8').reshape(-1)
+    X_train = [cv2.resize(cv2.imread(i, cv2.IMREAD_GRAYSCALE), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
+            for i in X_train.tolist()]
+    np.save(tmp_dir+str(image_width)+'_X_train.npy',X_train)
+    np.save(tmp_dir+str(image_width)+'_Y_train.npy',Y_train)
+    print('train created')
+
+if split_train:
+    X_train, X_valid, Y_train, Y_valid = train_test_split(X_train, Y_train, test_size=0.1, random_state=2)
+
+try:
+    X_test = np.load(tmp_dir+str(image_width)+'_X_test.npy')
+except FileNotFoundError:
+    X_test_path = ['../input/test/{}'.format(i) for i in os.listdir(test_dir)]
+    convert = lambda text: int(text) if text.isdigit() else text
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ]
+    X_test_path.sort(key=alphanum_key)
+    
+    X_test = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
+                for i in X_test_path]
+    np.save(tmp_dir+str(image_width)+'_X_test.npy',X_test)
 
 elapsed = time.time() - t
 print(str(elapsed)+' s')
-    
-X_train = np.array(X_train)
-Y_train = np.array(Y_train)
-X_train = X_train.astype('float32')
-Y_train = Y_train.astype('float32')
-X_train /= 255
+Y_train = np.array(Y_train, copy=False).astype('uint8')
+#X_train /= 255
 Y_train = keras.utils.to_categorical(Y_train, len(characters_20))
 
 if split_train:
-    X_valid = np.array(X_valid)
-    Y_valid = np.array(Y_valid)
-    X_valid = X_valid.astype('float32')
-    Y_valid = Y_valid.astype('float32')
-    X_valid /= 255
+    #X_valid = np.array(X_valid, copy=False).astype('float32')
+    Y_valid = np.array(Y_valid, copy=False).astype('uint8')
+    #X_valid /= 255
     Y_valid = keras.utils.to_categorical(Y_valid, len(characters_20))
 
 
 X_test = np.array(X_test)
+'''
 #optimizer = optimizers.adadelta(lr=1.0, rho=0.95, epsilon=1e-24, decay=0.0)
 #optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-24, decay=0, amsgrad=False)
-optimizer = optimizers.rmsprop(lr=0.0001, decay=1e-6)
+optimizer = optimizers.rmsprop(lr=0.0001)
 #optimizer = optimizers.sgd(lr=0.01, momentum=0, decay=0, nesterov=False)
 
 #kernel_initializer = initializers.normal(mean=0, stddev=0.5, seed=None)
@@ -123,25 +120,72 @@ optimizer = optimizers.rmsprop(lr=0.0001, decay=1e-6)
 #kernel_initializer = initializers.he_uniform()
 #kernel_initializer = initializers.glorot_uniform()
 
+class RestoreBestWeightsFinal(keras.callbacks.Callback):
+    def __init__(self,
+                 min_delta=0,
+                 mode='auto',
+                 baseline=None):
+        super(RestoreBestWeightsFinal, self).__init__()
+        self.min_delta = min_delta
+        self.best_weights = None
+
+        if mode not in ['auto', 'min', 'max']:
+            mode = 'auto'
+
+        if mode == 'min':
+            self.monitor_op = np.less
+        elif mode == 'max':
+            self.monitor_op = np.greater
+        else:
+            self.monitor_op = np.less
+
+        if self.monitor_op == np.greater:
+            self.min_delta *= 1
+        else:
+            self.min_delta *= -1
+
+    def on_train_begin(self, logs=None):
+        # Allow instances to be re-used
+        self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+        
+    def on_train_end(self, logs=None):
+        if self.best_weights is not None:
+            self.model.set_weights(self.best_weights)
+
+    def on_epoch_end(self, epoch, logs=None):
+        val_current = logs.get('val_loss')
+        if val_current is None:
+            return
+
+        if self.monitor_op(val_current - self.min_delta, self.best):
+            self.best = val_current
+            self.best_weights = self.model.get_weights()
+                
 callbacks = []
 #callbacks.append(keras.callbacks.EarlyStopping(monitor='loss', patience=50))
-callbacks.append(keras.callbacks.EarlyStopping(monitor='val_acc', patience=20))
+#callbacks.append(keras.callbacks.EarlyStopping(monitor='val_acc', patience=10))
 #callbacks.append(RestoreBestWeights(patience=1))
 #callbacks.append(EarlyStoppingThreshold(monitor='loss', value=0.1892))
-#callbacks.append(RestoreBestWeightsFinal())
+callbacks.append(RestoreBestWeightsFinal())
 #callbacks = None
 
 model = Sequential()
 model.add(Conv2D(32, (3, 3), activation='relu', input_shape=(image_width,image_width,3)))
 model.add(MaxPooling2D((2, 2)))
+model.add(Conv2D(32, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
+model.add(Dropout(0.25))
 model.add(Conv2D(64, (3, 3), activation='relu'))
 model.add(MaxPooling2D((2, 2)))
+model.add(Conv2D(64, (3, 3), activation='relu'))
+model.add(MaxPooling2D((2, 2)))
+model.add(Dropout(0.25))
 model.add(Conv2D(128, (3, 3), activation='relu'))
 model.add(MaxPooling2D((2, 2)))
 model.add(Conv2D(128, (3, 3), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
+model.add(MaxPooling2D((3, 3)))
 model.add(Flatten())
-#model.add(Dropout(0.5))
+model.add(Dropout(0.5))
 model.add(Dense(512, activation='relu'))
 model.add(Dense(20, activation='softmax'))
 
@@ -154,13 +198,13 @@ train_datagen = ImageDataGenerator( featurewise_center=False,  # set input mean 
                                     samplewise_std_normalization=False,  # divide each input by its std
                                     zca_whitening=False,  # apply ZCA whitening
                                     zca_epsilon=1e-06,  # epsilon for ZCA whitening
-                                    rotation_range=40,  # randomly rotate images in the range (degrees, 0 to 180)
+                                    rotation_range=30,  # randomly rotate images in the range (degrees, 0 to 180)
                                     # randomly shift images horizontally (fraction of total width)
                                     width_shift_range=0.1,
                                     # randomly shift images vertically (fraction of total height)
                                     height_shift_range=0.1,
-                                    shear_range=0.2,  # set range for random shear
-                                    zoom_range=0.2,  # set range for random zoom
+                                    shear_range=0.,  # set range for random shear
+                                    zoom_range=0.,  # set range for random zoom
                                     channel_shift_range=0.,  # set range for random channel shifts
                                     # set mode for filling points outside the input boundaries
                                     fill_mode='nearest',
@@ -168,29 +212,59 @@ train_datagen = ImageDataGenerator( featurewise_center=False,  # set input mean 
                                     horizontal_flip=True,  # randomly flip images
                                     vertical_flip=False,  # randomly flip images
                                     # set rescaling factor (applied before any other transformation)
-                                    rescale=None,
+                                    rescale=1./255,
                                     # set function that will be applied on each input
                                     preprocessing_function=None,
                                     # image data format, either "channels_first" or "channels_last"
-                                    data_format=None)
+                                    data_format=None,
+                                    validation_split=validation_split if split_train else None)
+
+train_generator = train_datagen.flow_from_directory(
+    train_dir,
+    target_size=(image_width,image_width),
+    batch_size=batch_size,
+    subset='training')
+
+valid_generator = train_datagen.flow_from_directory(
+    train_dir, # same directory as training data
+    target_size=(image_width, image_width),
+    batch_size=batch_size,
+    subset='validation') # set as validation data
+
+test_datagen = ImageDataGenerator( rescale=1./255)
+test_generator = test_datagen.flow_from_directory(
+    test_dir,
+    target_size=(image_width,image_width),
+    batch_size=1,
+    class_mode=None,  # only data, no labels
+    shuffle=False)
+
+convert = lambda text: int(text) if text.isdigit() else text
+alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ]
+test_generator.filenames.sort(key=alphanum_key)
 
 t = time.time()
 
-history_o = model.fit_generator(train_datagen.flow(X_train, Y_train, batch_size=batch_size),
-                                steps_per_epoch=len(X_train)//batch_size,
-                                epochs=epochs, validation_data=(X_valid, Y_valid) if split_train else None,
-                                validation_steps=(len(X_valid) // batch_size) if split_train else None,
-                                callbacks=callbacks,
-                                workers=8,
-                                )
+history_o = model.fit_generator(
+    train_generator,
+    steps_per_epoch = train_generator.samples // batch_size,
+    validation_data = valid_generator if split_train else None, 
+    validation_steps = (valid_generator.samples // batch_size) if split_train else None,
+    epochs = epochs,
+    callbacks=callbacks,
+    verbose=verbose,
+    workers=4)
 
 elapsed = time.time() - t
 
 history = pd.DataFrame(history_o.history)
 
-Y_test = model.predict(X_test)
+Y_test = model.predict_generator(test_generator, test_generator.samples,
+    verbose=verbose)
 
 Y_test = np.argmax(Y_test, axis=1)
+
+characters_20 = {v: k for k, v in train_generator.class_indices.items()}
 
 Y_test = np.array([characters_20[i] for i in Y_test])
 
@@ -257,10 +331,26 @@ print(' elapsed : ' + str(elapsed))
 for i in range(len(metrics)):
     print('    '+metrics[i]+' : ' + str(history[metrics[i]].values[-1]))
     if split_train:
-        print('val_'+metrics[i]+' : ' + str(history['val_'+metrics[i]].values[-1]) + '    ' + str(history['val_'+metrics[i]].min()))
+        print('val_'+metrics[i]+' : ' + str(history['val_'+metrics[i]].values[-1]) + '    ' + str(history['val_'+metrics[i]].max()))
 print('    loss : ' + str(final_loss))
 if split_train:
     print('val_loss : ' + str(final_val_loss)+ '    ' + str(history['val_loss'].min()))
 else:
     print('\n')
 print('    batch_size : '+str(batch_size))
+"""
+try:
+    X_train = np.load(tmp_dir+str(image_width)+'_X_train.npy')
+    X_valid = np.load(tmp_dir+str(image_width)+'_X_valid.npy')
+    Y_train = np.load(tmp_dir+str(image_width)+'_Y_train.npy')
+    Y_valid = np.load(tmp_dir+str(image_width)+'_Y_valid.npy')
+except FileNotFoundError:
+    X_train = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
+            for i in X_train_path]
+    X_valid = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
+            for i in X_valid_path]
+    np.save(tmp_dir+str(image_width)+'_X_train.npy',X_train)
+    np.save(tmp_dir+str(image_width)+'_X_valid.npy',X_valid)
+    np.save(tmp_dir+str(image_width)+'_Y_train.npy',Y_train)
+    np.save(tmp_dir+str(image_width)+'_Y_valid.npy',Y_valid)
+"""
