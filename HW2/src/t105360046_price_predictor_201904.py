@@ -4,56 +4,54 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import keras
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten
+from keras.models import model_from_json
+from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten, BatchNormalization, Input, Activation
 from keras import initializers
 from keras import optimizers
 from keras.preprocessing.image import ImageDataGenerator
+from PIL import Image
 import datetime
 import time as time
 import os
 from keras import backend as K
 import random
 import re
+import multiprocessing
 
 K.clear_session()
 
-os.chdir(os.path.dirname(os.path.realpath(__file__)))
+#os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
 output = True
 split_train = True
 save_to_dir = False
+pretrain_model = None
+#pretrain_model = '20190503_041438_RMSprop_16_37_split_train_True.h5'
 
+workers=multiprocessing.cpu_count()
 verbose = 1
-batch_size = 2
-epochs = 100
-image_width = 448
+batch_size =8
+epochs = 150
+image_width = 224
 validation_split = 0.1
-#color_mode='rgb'
-color_mode='grayscale'
+color_mode='rgb'
+#color_mode='grayscale'
 prediction_target_name = 'character'
 metrics = ['acc']
 loss = 'categorical_crossentropy'
 
-train_dir = '../input/train/'
+train_dir = '../input/train/characters-20/'
 test_dir = '../input/test/'
 tmp_dir = '../input/tmp/'
 
 gpu_options = tf.GPUOptions(allow_growth=True)
-sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 , 'CPU':4}))
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 , 'CPU':workers}))
 keras.backend.set_session(sess)
 
 #optimizer = optimizers.adadelta(lr=1.0, rho=0.95, epsilon=1e-24, decay=0.0)
 #optimizer = optimizers.adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-24, decay=0, amsgrad=False)
-optimizer = optimizers.rmsprop(lr=0.001)
+optimizer = optimizers.rmsprop(lr=0.0001)
 #optimizer = optimizers.sgd(lr=0.01, momentum=0, decay=0, nesterov=False)
-
-#kernel_initializer = initializers.normal(mean=0, stddev=0.5, seed=None)
-#kernel_initializer = initializers.uniform(minval=-0.05, maxval=0.05, seed=None)
-#kernel_initializer = initializers.truncated_normal(mean=0.0, stddev=0.05, seed=None)
-#kernel_initializer = initializers.orthogonal(gain=1, seed=None)
-#kernel_initializer = initializers.identity(gain=1)
-#kernel_initializer = initializers.he_uniform()
-kernel_initializer = initializers.glorot_uniform()
 
 class RestoreBestWeightsFinal(keras.callbacks.Callback):
     def __init__(self,
@@ -98,35 +96,75 @@ class RestoreBestWeightsFinal(keras.callbacks.Callback):
                 
 callbacks = []
 #callbacks.append(keras.callbacks.EarlyStopping(monitor='loss', patience=50))
-#callbacks.append(keras.callbacks.EarlyStopping(monitor='val_acc', patience=10))
+callbacks.append(keras.callbacks.EarlyStopping(monitor='val_acc', patience=10))
 #callbacks.append(RestoreBestWeights(patience=1))
 #callbacks.append(EarlyStoppingThreshold(monitor='loss', value=0.1892))
 callbacks.append(RestoreBestWeightsFinal())
 #callbacks = None
 
 model = Sequential()
-#'''224
-bbbb = 32
-model.add(Conv2D(bbbb*1, (3, 3), activation='relu', input_shape=(image_width,image_width,1 if color_mode=='grayscale' else 3)))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*1, (3, 3), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*2, (1, 1), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*2, (1, 1), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*4, (1, 1), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*4, (1, 1), activation='relu'))
-model.add(MaxPooling2D((2, 2)))
-model.add(Conv2D(bbbb*4, (1, 1), activation='relu'))
-#'''
+if pretrain_model is None:
 
-model.add(Flatten())
-#model.add(Dropout(0.5))
-model.add(Dense(512, activation='relu'))
-model.add(Dense(20, activation='softmax'))
-
+    #'''224
+    uints = 32
+    model.add(Conv2D(uints*2, kernel_size=16, strides=1, padding='same', activation='relu', input_shape=(image_width,image_width,1 if color_mode=='grayscale' else 3)))
+    model.add(BatchNormalization(epsilon=1e-12))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*1, kernel_size=8, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*1, kernel_size=4, strides=2, padding='same', activation='relu'))
+    model.add(BatchNormalization(epsilon=1e-12))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*2, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*2, kernel_size=4, strides=2, padding='same', activation='relu'))
+    model.add(BatchNormalization(epsilon=1e-12))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*4, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*4, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(BatchNormalization(epsilon=1e-12))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    
+    model.add(Flatten())
+    model.add(Dense(512, use_bias=False))
+    model.add(Activation('relu')) #14
+    model.add(BatchNormalization(epsilon=1e-12))
+    model.add(Dropout(0.5))
+    model.add(Dense(20, activation='softmax'))
+    #'''
+    '''224
+    uints = 32
+    model.add(Conv2D(uints*2, kernel_size=16, strides=1, padding='same', activation='relu', input_shape=(image_width,image_width,1 if color_mode=='grayscale' else 3)))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*1, kernel_size=8, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*1, kernel_size=4, strides=2, padding='same', activation='relu'))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*2, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*2, kernel_size=4, strides=2, padding='same', activation='relu'))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    model.add(Dropout(0.25))
+    model.add(Conv2D(uints*4, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(Conv2D(uints*4, kernel_size=4, strides=1, padding='same', activation='relu'))
+    model.add(MaxPooling2D((2, 2), strides=2))
+    
+    model.add(Flatten())
+    model.add(Dense(512, use_bias=False))
+    model.add(Activation('relu')) #14
+    model.add(Dropout(0.5))
+    model.add(Dense(20, activation='softmax'))
+    #'''
+    
+else:
+    f, e = os.path.splitext(pretrain_model)
+    json_file = open(f+'.json', 'r')
+    loaded_model_json = json_file.read()
+    json_file.close()
+    model = model_from_json(loaded_model_json)
+    model.load_weights(pretrain_model)
+    
 model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 model.summary()
 
@@ -139,13 +177,13 @@ train_datagen2 = ImageDataGenerator( featurewise_center=False,  # set input mean
                                     samplewise_std_normalization=False,  # divide each input by its std
                                     zca_whitening=False,  # apply ZCA whitening
                                     zca_epsilon=1e-06,  # epsilon for ZCA whitening
-                                    rotation_range=30,  # randomly rotate images in the range (degrees, 0 to 180)
+                                    rotation_range=40,  # randomly rotate images in the range (degrees, 0 to 180)
                                     # randomly shift images horizontally (fraction of total width)
-                                    width_shift_range=0.,
+                                    width_shift_range=0.2,
                                     # randomly shift images vertically (fraction of total height)
-                                    height_shift_range=0.,
+                                    height_shift_range=0.2,
                                     shear_range=0.,  # set range for random shear
-                                    zoom_range=0.,  # set range for random zoom
+                                    zoom_range=0.2,  # set range for random zoom
                                     channel_shift_range=0.,  # set range for random channel shifts
                                     # set mode for filling points outside the input boundaries
                                     fill_mode='nearest',
@@ -167,10 +205,10 @@ train_generator = train_datagen.flow_from_directory(
     color_mode=color_mode,
     target_size=(image_width,image_width),
     batch_size=batch_size,
-    save_to_dir=(tmp_dir+'/train/') if save_to_dir else None,
+    save_to_dir=(train_dir+'/train/') if save_to_dir else None,
     subset='training',
     shuffle=True)
-random.shuffle(train_generator.filenames)
+#random.shuffle(train_generator.filenames)
 
 train_generator.set_processing_attrs(train_datagen2,
                                      train_generator.target_size,
@@ -188,8 +226,9 @@ valid_generator = train_datagen.flow_from_directory(
     target_size=(image_width, image_width),
     save_to_dir=(tmp_dir+'/valid/') if save_to_dir else None,
     batch_size=batch_size,
-    subset='validation') # set as validation data
-valid_generator.filenames
+    subset='validation',
+    shuffle=True) # set as validation data
+
 test_generator = test_datagen.flow_from_directory(
     test_dir,
     color_mode=color_mode,
@@ -204,7 +243,7 @@ test_generator.filenames.sort(key=alphanum_key)
 
 t = time.time()
 
-history_o = model.fit_generator(
+model.fit_generator(
     train_generator,
     steps_per_epoch = train_generator.samples // batch_size,
     validation_data = valid_generator if split_train else None, 
@@ -212,7 +251,9 @@ history_o = model.fit_generator(
     epochs = epochs,
     callbacks=callbacks,
     verbose=verbose,
-    workers=4)
+    workers=workers)
+    
+history_o = model.history
 
 elapsed = time.time() - t
 
@@ -220,7 +261,7 @@ history = pd.DataFrame(history_o.history)
 
 Y_test = model.predict_generator(test_generator, test_generator.samples,
     verbose=verbose,
-    workers=4)
+    workers=workers)
 
 Y_test = np.argmax(Y_test, axis=1)
 
@@ -241,9 +282,9 @@ filename += '_'+optimizer.__class__.__name__
 filename += '_'+str(batch_size)
 filename += '_'+str(history['epoch'].values[-1])
 filename += '_split_train_'+str(split_train)
-filename += '_' + 'normalY'
 
 for i in range(len(metrics)):
+    f = plt.figure(figsize=(10,10));
     plt.plot(history[metrics[i]])
     if not split_train:
         plt.title('Model loss='+str(final_loss))
@@ -258,6 +299,8 @@ for i in range(len(metrics)):
     plt.legend('Train', loc='upper right')
     plt.grid()
     plt.show()
+    if output:
+        f.savefig(filename+'.pdf', bbox_inches='tight')
 
 f = plt.figure(figsize=(10,10));
 
@@ -297,20 +340,3 @@ if split_train:
     print('val_loss : ' + str(final_val_loss)+ '    ' + str(history['val_loss'].min()))
 else:
     print('\n')
-print('    batch_size : '+str(batch_size))
-"""
-try:
-    X_train = np.load(tmp_dir+str(image_width)+'_X_train.npy')
-    X_valid = np.load(tmp_dir+str(image_width)+'_X_valid.npy')
-    Y_train = np.load(tmp_dir+str(image_width)+'_Y_train.npy')
-    Y_valid = np.load(tmp_dir+str(image_width)+'_Y_valid.npy')
-except FileNotFoundError:
-    X_train = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
-            for i in X_train_path]
-    X_valid = [cv2.resize(cv2.imread(i, cv2.IMREAD_COLOR), (image_width,image_width), interpolation=cv2.INTER_CUBIC) 
-            for i in X_valid_path]
-    np.save(tmp_dir+str(image_width)+'_X_train.npy',X_train)
-    np.save(tmp_dir+str(image_width)+'_X_valid.npy',X_valid)
-    np.save(tmp_dir+str(image_width)+'_Y_train.npy',Y_train)
-    np.save(tmp_dir+str(image_width)+'_Y_valid.npy',Y_valid)
-"""
