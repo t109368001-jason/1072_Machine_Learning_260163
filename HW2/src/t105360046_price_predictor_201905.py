@@ -27,9 +27,9 @@ image_width = 64
 validation_split = 0.1
 
 rotation_range=60
-width_shift_range=0.
-height_shift_range=0.
-zoom_range=0.
+width_shift_range=0.1
+height_shift_range=0.1
+zoom_range=0.9
 
 color_mode='rgb'
 #color_mode='grayscale'
@@ -113,20 +113,20 @@ callbacks = []
 callbacks.append(keras.callbacks.EarlyStopping(monitor='val_acc', patience=20))
 callbacks.append(RestoreBestWeightsFinal(monitor='val_acc'))
 
-uints = 32
+filters = 32
 model = Sequential()
-model.add(Conv2D(uints*1, kernel_size=3, strides=1, padding='same', activation='relu', input_shape=(image_width,image_width,1 if color_mode=='grayscale' else 3)))
-model.add(Conv2D(uints*1, kernel_size=3, strides=1, padding='same', activation='relu'))
+model.add(Conv2D(filters=filters*1, kernel_size=3, strides=1, padding='same', activation='relu', input_shape=(image_width,image_width,1 if color_mode=='grayscale' else 3)))
+model.add(Conv2D(filters=filters*1, kernel_size=3, strides=1, padding='same', activation='relu'))
 model.add(MaxPooling2D((2, 2), strides=2))
 model.add(BatchNormalization(epsilon=1e-12))
 model.add(Dropout(0.25))
-model.add(Conv2D(uints*2, kernel_size=3, strides=1, padding='same', activation='relu'))
-model.add(Conv2D(uints*2, kernel_size=3, strides=1, padding='same', activation='relu'))
+model.add(Conv2D(filters=filters*2, kernel_size=3, strides=1, padding='same', activation='relu'))
+model.add(Conv2D(filters=filters*2, kernel_size=3, strides=1, padding='same', activation='relu'))
 model.add(MaxPooling2D((2, 2), strides=2))
 model.add(BatchNormalization(epsilon=1e-12))
 model.add(Dropout(0.25))
-model.add(Conv2D(uints*4, kernel_size=3, strides=1, padding='same', activation='relu'))
-model.add(Conv2D(uints*4, kernel_size=3, strides=1, padding='same', activation='relu'))
+model.add(Conv2D(filters=filters*4, kernel_size=3, strides=1, padding='same', activation='relu'))
+model.add(Conv2D(filters=filters*4, kernel_size=3, strides=1, padding='same', activation='relu'))
 model.add(MaxPooling2D((2, 2), strides=2))
 model.add(BatchNormalization(epsilon=1e-12))
 model.add(Dropout(0.25))
@@ -210,10 +210,15 @@ Y_test = model.predict_generator(
 
 elapsed = time.time() - t
 
-history_o = model.history
+try:
+    history = history[0:restore_index-1]
+    new_history = pd.DataFrame(model.history.history)
+    new_history.index += restore_index
+    history = history.append(new_history)
+except NameError:
+    history = pd.DataFrame(model.history.history)
+    history.index += 1
 
-history = pd.DataFrame(history_o.history)
-history.index += 1
 
 Y_test = np.argmax(Y_test, axis=1)
 
