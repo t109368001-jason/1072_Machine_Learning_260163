@@ -1,0 +1,4 @@
+classes= 1
+train  = /home/xian-jie/github/1072_Machine_Learning_260163/HW4/cfg/[no_other][gray][random=0]/train.txt
+names  = /home/xian-jie/github/1072_Machine_Learning_260163/HW4/cfg/[no_other][gray][random=0]/my.names
+backup  = /home/xian-jie/github/1072_Machine_Learning_260163/HW4/cfg/[no_other][gray][random=0]
