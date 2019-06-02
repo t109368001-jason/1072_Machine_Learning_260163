@@ -1,0 +1,26 @@
+<annotation>
+	<folder>car</folder>
+	<filename>5199T2_20140107_072214.jpg</filename>
+	<path>C:\Users\Alice\Desktop\car_&#23433;\car\5199T2_20140107_072214.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>320</width>
+		<height>240</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>plate</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>109</xmin>
+			<ymin>44</ymin>
+			<xmax>180</xmax>
+			<ymax>74</ymax>
+		</bndbox>
+	</object>
+</annotation>

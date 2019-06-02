@@ -1,0 +1,26 @@
+<annotation>
+	<folder>car</folder>
+	<filename>5902VF_20131223_082859.jpg</filename>
+	<path>C:\Users\user\Desktop\car\5902VF_20131223_082859.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>320</width>
+		<height>240</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>plate</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>98</xmin>
+			<ymin>17</ymin>
+			<xmax>188</xmax>
+			<ymax>53</ymax>
+		</bndbox>
+	</object>
+</annotation>
