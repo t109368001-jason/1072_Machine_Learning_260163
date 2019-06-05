@@ -1,14 +1,17 @@
 #%% import
 import os
+from os.path import join
 import sys
 import re
 import datetime
 import random
+import itertools
 import numpy as np
 import pandas as pd
 import time as time
 from ast import literal_eval
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import matplotlib.backends.backend_pdf
 import multiprocessing
 import tensorflow as tf
@@ -27,8 +30,7 @@ sys.path.append(os.path.abspath('../input/library'))
 from yolo_model import preprocess_true_boxes, yolo_body, tiny_yolo_body, yolo_loss, yolo_eval
 from yolo_utils import get_random_data, letterbox_image
 
-from PIL import Image, ImageDraw
-import cv2
+from PIL import Image, ImageDraw, ImageOps
 
 #%% session config
 K.clear_session()
@@ -37,8 +39,8 @@ gpu_options = tf.GPUOptions(allow_growth=True)
 sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, device_count={'GPU':1 , 'CPU':workers}))
 K.set_session(sess)
 #%% basic parameter
-annotation_path = '../input/database/train.txt'
-test_path = '../input/ntut-ml-2019-computer-vision/test/data/test'
+train_list = '../input/database/train.txt'
+test_list = '../input/database/test.txt'
 output_prefix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_plate_")
 output_model_path = output_prefix + 'trained_weights_final.h5'
 
@@ -47,39 +49,36 @@ num_classes = len(class_names)
 anchors = [47, 20,  58, 26,  73, 26,  76, 33,  86, 41, 114, 53]
 anchors = np.array(anchors).reshape(-1, 2)
 
-input_shape = (256,320) # multiple of 32, hw
+input_shape = (128,64) # multiple of 32, hw
 val_split = 0.1
 
-epochs = 5
-batch_size = 8
+epochs = 60
+batch_size = 64
 verbose = 1
 img_w = 128
 img_h = 64
+
+with open(test_list) as f:
+    lines_test = f.readlines()
+#lines_test = lines_test[:100]
+
+with open(train_list) as f:
+    lines = f.readlines()
+    
+np.random.shuffle(lines)
+#lines = lines[:1000]
+np.random.seed(None)
+num_val = int(len(lines)*val_split)
+num_train = len(lines) - num_val
+
 #%% functions
-from collections import Counter
-def get_counter(dirpath):
-    dirname = os.path.basename(dirpath)
-    ann_dirpath = os.path.join(dirpath, 'ann')
-    letters = ''
-    lens = []
-    for filename in os.listdir(ann_dirpath):
-        json_filepath = os.path.join(ann_dirpath, filename)
-        description = os.path.join.load(open(json_filepath, 'r'))['description']
-        lens.append(len(description))
-        letters += description
-    print('Max plate length in "%s":' % dirname, max(Counter(lens).keys()))
-    return Counter(letters)
-c_val = get_counter('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/val/anpr_ocr/train/')
-c_train = get_counter('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/train/anpr_ocr/train/')
-letters_train = set(c_train.keys())
-letters_val = set(c_val.keys())
-if letters_train == letters_val:
-    print('Letters in train and val do match')
-else:
-    raise Exception()
-# print(len(letters_train), len(letters_val), len(letters_val | letters_train))
-letters = sorted(list(letters_train))
-print('Letters:', ' '.join(letters))
+max_text_len = max([(len(x.split()[0].split('/')[-1].split('_')[0])) for x in lines])
+
+letters = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+           'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+           'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+           'U', 'V', 'W', 'X', 'Y', 'Z', ' ']
+
 def labels_to_text(labels):
     return ''.join(list(map(lambda x: letters[int(x)], labels)))
 
@@ -92,50 +91,56 @@ def is_valid_str(s):
             return False
     return True
 
+def text_to_img_number(text, input_shape, max_text_len, is_test_data=False):
+    ss = text.split()
+    img_path = ss[0]
+    img = Image.open(img_path).convert('L')
+    if len(ss) < 2:
+        number = ' '*max_text_len
+    else:
+        box_class = ss[1].split(',')
+        left, top, right, bottom = box_class[:4]
+        number = img_path.split('/')[-1].split('_')[0]
+        img = img.crop((int(left), int(top), int(right), int(bottom)))
+    img = img.resize(input_shape, Image.ANTIALIAS)
+    img = np.array(img, dtype='float32')
+    img /= 255
+    if len(number) < max_text_len:
+        number += ' '*(max_text_len-len(number))
+    if is_test_data:
+        number = ' '*max_text_len
+    return img, number
+
 class TextImageGenerator:
     
     def __init__(self, 
-                 dirpath, 
-                 img_w, img_h, 
+                 lines, 
+                 input_shape,
                  batch_size, 
                  downsample_factor,
-                 max_text_len=8):
+                 max_text_len,
+                 is_test_data=False):
         
-        self.img_h = img_h
-        self.img_w = img_w
+        self.input_shape = input_shape
         self.batch_size = batch_size
         self.max_text_len = max_text_len
+        self.is_test_data = is_test_data
         self.downsample_factor = downsample_factor
-        
-        img_dirpath = os.path.join(dirpath, 'img')
-        ann_dirpath = os.path.join(dirpath, 'ann')
-        self.samples = []
-        for filename in os.listdir(img_dirpath):
-            name, ext = os.path.splitext(filename)
-            if ext == '.png':
-                img_filepath = os.path.join(img_dirpath, filename)
-                json_filepath = os.path.join(ann_dirpath, name + '.json')
-                description = os.path.join.load(open(json_filepath, 'r'))['description']
-                if is_valid_str(description):
-                    self.samples.append([img_filepath, description])
-        
+        self.samples = lines
         self.n = len(self.samples)
         self.indexes = list(range(self.n))
-        self.cur_index = 0
+        self.cur_index = self.n
         
     def build_data(self):
-        self.imgs = np.zeros((self.n, self.img_h, self.img_w))
+        self.imgs = np.zeros((self.n, self.input_shape[1], self.input_shape[0]))
         self.texts = []
-        for i, (img_filepath, text) in enumerate(self.samples):
-            img = cv2.imread(img_filepath)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.resize(img, (self.img_w, self.img_h))
-            img = img.astype(np.float32)
-            img /= 255
+        for i, (text) in enumerate(self.samples):
+            img, number = text_to_img_number(text, self.input_shape, self.max_text_len, self.is_test_data)
             # width and height are backwards from typical Keras convention
             # because width is the time dimension when it gets fed into the RNN
             self.imgs[i, :, :] = img
-            self.texts.append(text)
+            self.texts.append(number)
+            #print('%d/%d %s'%(i, len(self.samples), number), end=' ', flush=True)
         
     def get_output_size(self):
         return len(letters) + 1
@@ -144,7 +149,8 @@ class TextImageGenerator:
         self.cur_index += 1
         if self.cur_index >= self.n:
             self.cur_index = 0
-            random.shuffle(self.indexes)
+            if not self.is_test_data:
+                random.shuffle(self.indexes)
         return self.imgs[self.indexes[self.cur_index]], self.texts[self.indexes[self.cur_index]]
     
     def next_batch(self):
@@ -152,11 +158,11 @@ class TextImageGenerator:
             # width and height are backwards from typical Keras convention
             # because width is the time dimension when it gets fed into the RNN
             if K.image_data_format() == 'channels_first':
-                X_data = np.ones([self.batch_size, 1, self.img_w, self.img_h])
+                X_data = np.ones([self.batch_size, 1, self.input_shape[0], self.input_shape[1]])
             else:
-                X_data = np.ones([self.batch_size, self.img_w, self.img_h, 1])
+                X_data = np.ones([self.batch_size, self.input_shape[0], self.input_shape[1], 1])
             Y_data = np.ones([self.batch_size, self.max_text_len])
-            input_length = np.ones((self.batch_size, 1)) * (self.img_w // self.downsample_factor - 2)
+            input_length = np.ones((self.batch_size, 1)) * (self.input_shape[0] // self.downsample_factor - 2)
             label_length = np.zeros((self.batch_size, 1))
             source_str = []
                                    
@@ -181,8 +187,6 @@ class TextImageGenerator:
             }
             outputs = {'ctc': np.zeros([self.batch_size])}
             yield (inputs, outputs)
-tiger = TextImageGenerator('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/val/anpr_ocr/train/', 128, 64, 8, 4)
-tiger.build_data()
 def ctc_lambda_func(args):
     y_pred, labels, input_length, label_length = args
     # the 2 is critical here since the first couple outputs of the RNN
@@ -200,93 +204,117 @@ def decode_batch(out):
                 outstr += letters[c]
         ret.append(outstr)
     return ret
+early_stop = EarlyStopping(monitor='loss', min_delta=0.001, patience=10, mode='min', verbose=1)
+#%% load train data
+tiger_train = TextImageGenerator(lines[:num_train], input_shape, batch_size, 4, max_text_len)
+tiger_valid = TextImageGenerator(lines[num_train:], input_shape, batch_size, 4, max_text_len)
+print('Building tiger_train')
+tiger_train.build_data()
+print('Building tiger_valid')
+tiger_valid.build_data()
+'''#check data
+for inp, out in tiger_train.next_batch():
+    print('Text generator output (data which will be fed into the neutral network):')
+    print('1) the_input (image)')
+    if K.image_data_format() == 'channels_first':
+        img = inp['the_input'][0, 0, :, :]
+    else:
+        img = inp['the_input'][0, :, :, 0]
+    
+    plt.imshow(img.T, cmap='gray')
+    plt.show()
+    print('2) the_labels (plate number): %s is encoded as %s' % 
+          (labels_to_text(inp['the_labels'][0]), list(map(int, inp['the_labels'][0]))))
+    print('3) input_length (width of image that is fed to the loss function): %d == %d / 4 - 2' % 
+          (inp['input_length'][0], tiger_train.input_shape[0]))
+    print('4) label_length (length of plate number): %d' % inp['label_length'][0])
+    break
+'''
 #%% create model
 # Network parameters
-conv_filters = 16
-kernel_size = (3, 3)
-pool_size = 2
-time_dense_size = 32
-rnn_size = 512
-
-if K.image_data_format() == 'channels_first':
-    input_shape = (1, img_w, img_h)
-else:
-    input_shape = (img_w, img_h, 1)
+def create_model():
+    conv_filters = 16
+    kernel_size = (3, 3)
+    pool_size = 2
+    time_dense_size = 32
+    rnn_size = 512
     
-batch_size = 32
-downsample_factor = pool_size ** 2
-tiger_train = TextImageGenerator('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/train/anpr_ocr/train/', img_w, img_h, batch_size, downsample_factor)
-tiger_train.build_data()
-tiger_val = TextImageGenerator('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/val/anpr_ocr/train/', img_w, img_h, batch_size, downsample_factor)
-tiger_val.build_data()
+    if K.image_data_format() == 'channels_first':
+        input_shape = (1, img_w, img_h)
+    else:
+        input_shape = (img_w, img_h, 1)
+        
+    act = 'relu'
+    input_data = Input(name='the_input', shape=input_shape, dtype='float32')
+    inner = Conv2D(conv_filters, kernel_size, padding='same',
+                   activation=act, kernel_initializer='he_normal',
+                   name='conv1')(input_data)
+    inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max1')(inner)
+    inner = Conv2D(conv_filters, kernel_size, padding='same',
+                   activation=act, kernel_initializer='he_normal',
+                   name='conv2')(inner)
+    inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max2')(inner)
+    
+    conv_to_rnn_dims = (img_w // (pool_size ** 2), (img_h // (pool_size ** 2)) * conv_filters)
+    inner = Reshape(target_shape=conv_to_rnn_dims, name='reshape')(inner)
+    
+    # cuts down input size going into RNN:
+    inner = Dense(time_dense_size, activation=act, name='dense1')(inner)
+    
+    # Two layers of bidirecitonal GRUs
+    # GRU seems to work as well, if not better than LSTM:
+    gru_1 = GRU(rnn_size, return_sequences=True, kernel_initializer='he_normal', name='gru1')(inner)
+    gru_1b = GRU(rnn_size, return_sequences=True, go_backwards=True, kernel_initializer='he_normal', name='gru1_b')(inner)
+    gru1_merged = add([gru_1, gru_1b])
+    gru_2 = GRU(rnn_size, return_sequences=True, kernel_initializer='he_normal', name='gru2')(gru1_merged)
+    gru_2b = GRU(rnn_size, return_sequences=True, go_backwards=True, kernel_initializer='he_normal', name='gru2_b')(gru1_merged)
+    
+    # transforms RNN output to character activations:
+    inner = Dense(len(letters) + 1, kernel_initializer='he_normal',
+                  name='dense2')(concatenate([gru_2, gru_2b]))
+    y_pred = Activation('softmax', name='softmax')(inner)
+    Model(inputs=input_data, outputs=y_pred).summary()
+    
+    labels = Input(name='the_labels', shape=[max_text_len], dtype='float32')
+    input_length = Input(name='input_length', shape=[1], dtype='int64')
+    label_length = Input(name='label_length', shape=[1], dtype='int64')
+    # Keras doesn't currently support loss funcs with extra parameters
+    # so CTC loss is implemented in a lambda layer
+    loss_out = Lambda(ctc_lambda_func, output_shape=(1,), name='ctc')([y_pred, labels, input_length, label_length])
+    
+    # clipnorm seems to speeds up convergence
+    sgd = SGD(lr=0.02, decay=1e-6, momentum=0.9, nesterov=True, clipnorm=5)
+    
+    model = Model(inputs=[input_data, labels, input_length, label_length], outputs=loss_out)
+    
+    # the loss calc occurs elsewhere, so use a dummy lambda func for the loss
+    model.compile(loss={'ctc': lambda y_true, y_pred: y_pred}, optimizer=sgd)
+    return model
 
-act = 'relu'
-input_data = Input(name='the_input', shape=input_shape, dtype='float32')
-inner = Conv2D(conv_filters, kernel_size, padding='same',
-               activation=act, kernel_initializer='he_normal',
-               name='conv1')(input_data)
-inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max1')(inner)
-inner = Conv2D(conv_filters, kernel_size, padding='same',
-               activation=act, kernel_initializer='he_normal',
-               name='conv2')(inner)
-inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max2')(inner)
-
-conv_to_rnn_dims = (img_w // (pool_size ** 2), (img_h // (pool_size ** 2)) * conv_filters)
-inner = Reshape(target_shape=conv_to_rnn_dims, name='reshape')(inner)
-
-# cuts down input size going into RNN:
-inner = Dense(time_dense_size, activation=act, name='dense1')(inner)
-
-# Two layers of bidirecitonal GRUs
-# GRU seems to work as well, if not better than LSTM:
-gru_1 = GRU(rnn_size, return_sequences=True, kernel_initializer='he_normal', name='gru1')(inner)
-gru_1b = GRU(rnn_size, return_sequences=True, go_backwards=True, kernel_initializer='he_normal', name='gru1_b')(inner)
-gru1_merged = add([gru_1, gru_1b])
-gru_2 = GRU(rnn_size, return_sequences=True, kernel_initializer='he_normal', name='gru2')(gru1_merged)
-gru_2b = GRU(rnn_size, return_sequences=True, go_backwards=True, kernel_initializer='he_normal', name='gru2_b')(gru1_merged)
-
-# transforms RNN output to character activations:
-inner = Dense(tiger_train.get_output_size(), kernel_initializer='he_normal',
-              name='dense2')(concatenate([gru_2, gru_2b]))
-y_pred = Activation('softmax', name='softmax')(inner)
-Model(inputs=input_data, outputs=y_pred).summary()
-
-labels = Input(name='the_labels', shape=[tiger_train.max_text_len], dtype='float32')
-input_length = Input(name='input_length', shape=[1], dtype='int64')
-label_length = Input(name='label_length', shape=[1], dtype='int64')
-# Keras doesn't currently support loss funcs with extra parameters
-# so CTC loss is implemented in a lambda layer
-loss_out = Lambda(ctc_lambda_func, output_shape=(1,), name='ctc')([y_pred, labels, input_length, label_length])
-
-# clipnorm seems to speeds up convergence
-sgd = SGD(lr=0.02, decay=1e-6, momentum=0.9, nesterov=True, clipnorm=5)
-
-model = Model(inputs=[input_data, labels, input_length, label_length], outputs=loss_out)
-
-# the loss calc occurs elsewhere, so use a dummy lambda func for the loss
-model.compile(loss={'ctc': lambda y_true, y_pred: y_pred}, optimizer=sgd)
-
+model = create_model()
 #%% train
 t = time.time()
-# captures output of softmax so we can decode the output during visualization
-test_func = K.function([input_data], [y_pred])
 
-model.fit_generator(generator=tiger_train.next_batch(), 
-                    steps_per_epoch=tiger_train.n,
-                    epochs=1, 
-                    validation_data=tiger_val.next_batch(), 
-                    validation_steps=tiger_val.n)
-
+print('Train on {} samples, val on {} samples, with batch size {}.'.format(num_train, num_val, batch_size))
+model.fit_generator(generator=tiger_train.next_batch(),
+                    steps_per_epoch=int(tiger_train.n / batch_size),
+                    epochs=epochs,
+                    callbacks=[early_stop],
+                    validation_data=tiger_valid.next_batch(),
+                    validation_steps=int(tiger_valid.n / batch_size),
+                    verbose=verbose)
 model.save_weights(output_model_path)
 elapsed = time.time() - t
 
 #%% predict
-tiger_test = TextImageGenerator('/home/ubuntu/PHDFITRI/codeLicencePlate/Licence-Plate-Recognition-Tensorflow-Keras/data/test/anpr_ocr/test/', 128, 64, 8, 4)
+tiger_test = TextImageGenerator(lines_test, input_shape, 1, 4, max_text_len, True)
 tiger_test.build_data()
+print('Building tiger_test')
 
+y_test = []
 net_inp = model.get_layer(name='the_input').input
 net_out = model.get_layer(name='softmax').output
-
+i = 0
 for inp_value, _ in tiger_test.next_batch():
     bs = inp_value['the_input'].shape[0]
     X_data = inp_value['the_input']
@@ -297,7 +325,9 @@ for inp_value, _ in tiger_test.next_batch():
     for label in labels:
         text = ''.join(list(map(lambda x: letters[int(x)], label)))
         texts.append(text)
-    
+    pred_texts.replace(" ", "")
+    y_test.append(pred_texts)
+    '''
     for i in range(bs):
         fig = plt.figure(figsize=(10, 10))
         outer = gridspec.GridSpec(2, 1, wspace=10, hspace=0.1)
@@ -321,12 +351,16 @@ for inp_value, _ in tiger_test.next_batch():
         
         #ax.axvline(x, linestyle='--', color='k')
         plt.show()
-    break
-y_test = pd.DataFrame(y_test, columns=['top', 'left', 'bottom', 'right', 'score', 'class'])
+    '''
+    i += 1
+    print('%d/%d'%(i, tiger_test.n), end=' ', flush=True)
+    if i == 10000:
+        break
+
+y_test = pd.DataFrame(y_test, columns=['Number'])
 y_test.index += 1
 y_test.to_csv(output_prefix+'.csv', index_label='ID')
 
-a = pd.read_csv(output_prefix+'.csv')
 #%% plot
 
 pdf = matplotlib.backends.backend_pdf.PdfPages(output_prefix+'.pdf')

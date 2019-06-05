@@ -192,11 +192,15 @@ for test_file in test_files:
         right = min(image.size[0], np.floor(right + 0.5).astype('int32'))
         draw.rectangle([left, top, right, bottom],
                        outline=(255,255,255))'''
-y_test = pd.DataFrame(y_test, columns=['top', 'left', 'bottom', 'right', 'score', 'class'])
-y_test.index += 1
-y_test.to_csv(output_prefix+'.csv', index_label='ID')
 
-a = pd.read_csv(output_prefix+'.csv')
+y_test = pd.read_csv('test.csv', index_col='ID')
+y_test = y_test.values
+test_txt = open(output_prefix+'test.txt', 'w')
+for i, (test_file) in enumerate(test_files):
+    top, left, bottom, right, score, class_name = y_test[i]
+    test_txt.write('%s %d,%d,%d,%d,%d,%d\n'%(test_file, left, top, right, bottom, score, class_name))
+test_txt.close()
+
 #%% plot
 
 pdf = matplotlib.backends.backend_pdf.PdfPages(output_prefix+'.pdf')

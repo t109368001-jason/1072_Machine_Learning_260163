@@ -1,0 +1,3 @@
+https://github.com/qqwweee/keras-yolo3
+https://github.com/fitrialif/Licence-Plate-Recognition-Keras
+
