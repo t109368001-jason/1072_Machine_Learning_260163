@@ -17,7 +17,7 @@ import multiprocessing
 import tensorflow as tf
 import keras.backend as K
 from keras.layers.convolutional import Conv2D, MaxPooling2D
-from keras.layers import Input, Dense, Activation
+from keras.layers import Input, Dense, Activation, Dropout
 from keras.layers import Reshape, Lambda
 from keras.layers.merge import add, concatenate
 from keras.models import Model, load_model
@@ -52,7 +52,7 @@ anchors = np.array(anchors).reshape(-1, 2)
 input_shape = (128,64) # multiple of 32, hw
 val_split = 0.1
 
-epochs = 60
+epochs = 2
 batch_size = 64
 verbose = 1
 img_w = 128
@@ -250,10 +250,12 @@ def create_model():
                    activation=act, kernel_initializer='he_normal',
                    name='conv1')(input_data)
     inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max1')(inner)
+    inner = Dropout(0.25)(inner)
     inner = Conv2D(conv_filters, kernel_size, padding='same',
                    activation=act, kernel_initializer='he_normal',
                    name='conv2')(inner)
     inner = MaxPooling2D(pool_size=(pool_size, pool_size), name='max2')(inner)
+    inner = Dropout(0.25)(inner)
     
     conv_to_rnn_dims = (img_w // (pool_size ** 2), (img_h // (pool_size ** 2)) * conv_filters)
     inner = Reshape(target_shape=conv_to_rnn_dims, name='reshape')(inner)
@@ -272,6 +274,7 @@ def create_model():
     # transforms RNN output to character activations:
     inner = Dense(len(letters) + 1, kernel_initializer='he_normal',
                   name='dense2')(concatenate([gru_2, gru_2b]))
+    inner = Dropout(0.25)(inner)
     y_pred = Activation('softmax', name='softmax')(inner)
     Model(inputs=input_data, outputs=y_pred).summary()
     
@@ -282,8 +285,7 @@ def create_model():
     # so CTC loss is implemented in a lambda layer
     loss_out = Lambda(ctc_lambda_func, output_shape=(1,), name='ctc')([y_pred, labels, input_length, label_length])
     
-    # clipnorm seems to speeds up convergence
-    sgd = SGD(lr=0.02, decay=1e-6, momentum=0.9, nesterov=True, clipnorm=5)
+    sgd = SGD(lr=0.01, decay=1e-6, momentum=0.9, nesterov=True)
     
     model = Model(inputs=[input_data, labels, input_length, label_length], outputs=loss_out)
     
@@ -325,8 +327,8 @@ for inp_value, _ in tiger_test.next_batch():
     for label in labels:
         text = ''.join(list(map(lambda x: letters[int(x)], label)))
         texts.append(text)
-    pred_texts.replace(" ", "")
-    y_test.append(pred_texts)
+    number = pred_texts[0].replace(" ", "")
+    y_test.append(number)
     '''
     for i in range(bs):
         fig = plt.figure(figsize=(10, 10))
