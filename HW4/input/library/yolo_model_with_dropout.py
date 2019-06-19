@@ -46,11 +46,17 @@ def resblock_body(x, num_filters, num_blocks):
 def darknet_body(x):
     '''Darknent body having 52 Convolution2D layers'''
     x = DarknetConv2D_BN_Leaky(32, (3,3))(x)
+    x = Dropout(0.25)(x)
     x = resblock_body(x, 64, 1)
+    x = Dropout(0.25)(x)
     x = resblock_body(x, 128, 2)
+    x = Dropout(0.25)(x)
     x = resblock_body(x, 256, 8)
+    x = Dropout(0.25)(x)
     x = resblock_body(x, 512, 8)
+    x = Dropout(0.25)(x)
     x = resblock_body(x, 1024, 4)
+    x = Dropout(0.25)(x)
     return x
 
 def make_last_layers(x, num_filters, out_filters):
